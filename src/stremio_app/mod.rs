@@ -1,5 +1,6 @@
 pub mod app;
 pub use app::MainWindow;
+pub mod aspect_ratio;
 pub mod ipc;
 pub mod stremio_player;
 pub mod stremio_server;

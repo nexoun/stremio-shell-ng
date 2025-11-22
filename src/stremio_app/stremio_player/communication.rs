@@ -138,6 +138,7 @@ pub enum BoolProp {
     PausedForCache,
     Seeking,
     EofReached,
+    Keepaspect,
 }
 stringable!(BoolProp);
 // Int
@@ -164,6 +165,9 @@ pub enum FpProp {
     CacheBufferingState,
     SubPos,
     Speed,
+    VideoAspectOverride,
+    VideoZoom,
+    Panscan,
 }
 stringable!(FpProp);
 // Str
@@ -186,6 +190,7 @@ pub enum StrProp {
     TrackList,
     VideoParams,
     Vo,
+    VideoUnscaled,
 }
 stringable!(StrProp);
 

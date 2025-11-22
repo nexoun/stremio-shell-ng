@@ -1,3 +1,5 @@
+engine.log
+engine.err
 /target
 /stremio*.exe
 /libmpv-2.dll

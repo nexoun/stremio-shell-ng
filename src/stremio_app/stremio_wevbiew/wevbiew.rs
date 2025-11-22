@@ -166,8 +166,72 @@ impl PartialUi for WebView {
 
                             try{console.log('Shell JS injected');if(window.self === window.top) {
                                 window.qt={webChannelTransport:{send:window.chrome.webview.postMessage}};
-                                window.chrome.webview.addEventListener('message',ev=>window.qt.webChannelTransport.onmessage(ev));
+                                window.chrome.webview.addEventListener('message',ev=>{
+                                    try{
+                                        const data = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
+                                        if(data && data.__borderbreakerOverlay){
+                                            if(window.__bbShowOverlay){ window.__bbShowOverlay(data.__borderbreakerOverlay); }
+                                            return;
+                                        }
+                                    }catch(err){}
+                                    window.qt.webChannelTransport.onmessage(ev);
+                                });
                                 }}catch(e){}
+                            try{
+                                if(!document.getElementById('bb-overlay-style')){
+                                    const style = document.createElement('style');
+                                    style.id = 'bb-overlay-style';
+                                    style.textContent = `
+                                        #bbOverlayToast {
+                                            position: fixed;
+                                            top: 28px;
+                                            left: 50%;
+                                            transform: translateX(-50%) translateY(-8px);
+                                            padding: 10px 20px;
+                                            border-radius: 10px;
+                                            background: rgba(13, 15, 23, 0.92);
+                                            color: #fff;
+                                            font-size: 14px;
+                                            font-weight: 600;
+                                            letter-spacing: 0.2px;
+                                            box-shadow: 0 12px 35px rgba(0,0,0,0.4);
+                                            z-index: 99999;
+                                            opacity: 0;
+                                            pointer-events: none;
+                                            transition: opacity .18s ease, transform .18s ease;
+                                            font-family: 'Segoe UI', 'Inter', sans-serif;
+                                        }
+                                        #bbOverlayToast.visible {
+                                            opacity: 1;
+                                            transform: translateX(-50%) translateY(0);
+                                        }
+                                    `;
+                                    document.head.appendChild(style);
+                                    const toast = document.createElement('div');
+                                    toast.id = 'bbOverlayToast';
+                                    document.body.appendChild(toast);
+                                }
+                                window.__bbShowOverlay = (text) => {
+                                    const toast = document.getElementById('bbOverlayToast');
+                                    if(!toast) return;
+                                    toast.textContent = text;
+                                    toast.classList.add('visible');
+                                    clearTimeout(window.__bbOverlayTimer);
+                                    window.__bbOverlayTimer = setTimeout(() => toast.classList.remove('visible'), 1700);
+                                };
+                            }catch(e){}
+                            try{
+                                window.addEventListener('keydown', (e) => {
+                                    const tag = (e.target && e.target.tagName || "").toUpperCase();
+                                    if(e.ctrlKey || e.altKey || e.metaKey) return;
+                                    if(tag === 'INPUT' || tag === 'TEXTAREA') return;
+                                    if(e.target && e.target.isContentEditable) return;
+                                    if((e.key || "").toLowerCase() === "b") {
+                                        e.preventDefault();
+                                        window.chrome.webview.postMessage('{"id":1,"args":["borderbreaker-cycle"]}');
+                                    }
+                                }, true);
+                            }catch(e){}
                             "##, |_| Ok(())).expect("Cannot add script to webview");
                             Ok(())
                         }).expect("Cannot add content loading");
@@ -177,16 +241,17 @@ impl PartialUi for WebView {
                         controller
                             .move_focus(webview2::MoveFocusReason::Programmatic)
                             .ok();
-                        controller.add_accelerator_key_pressed(move |_, e| {
-                            // Block F7, Ctrl+F, and Ctrl+G
-                            let k = e.get_virtual_key()?;
-                            if k == VK_F7 as u32  || k == 70 & 0x7F || k == 71 & 0x7F {
-                                e.put_handled(true)
-                            } else {
-                                Ok(())
-                            }
-                        })
-                        .unwrap();
+                        controller
+                            .add_accelerator_key_pressed(move |_, e| {
+                                // Block F7, Ctrl+F, and Ctrl+G
+                                let k = e.get_virtual_key()?;
+                                if k == VK_F7 as u32 || k == 70 & 0x7F || k == 71 & 0x7F {
+                                    e.put_handled(true)
+                                } else {
+                                    Ok(())
+                                }
+                            })
+                            .unwrap();
 
                         controller_clone
                             .set(controller)

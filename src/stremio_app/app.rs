@@ -1,7 +1,7 @@
 use native_windows_derive::NwgUi;
 use native_windows_gui as nwg;
 use rand::Rng;
-use serde_json;
+use serde_json::{self, json};
 use std::{
     cell::RefCell,
     io::Read,
@@ -16,6 +16,7 @@ use url::Url;
 use winapi::um::{winbase::CREATE_BREAKAWAY_FROM_JOB, winuser::WS_EX_TOPMOST};
 
 use crate::stremio_app::{
+    aspect_ratio::AspectController,
     constants::{APP_NAME, UPDATE_ENDPOINT, UPDATE_INTERVAL, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH},
     ipc::{RPCRequest, RPCResponse},
     splash::SplashImage,
@@ -84,6 +85,11 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_focus_notice] )]
     pub focus_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_aspect_toggle_notice] )]
+    pub aspect_toggle_notice: nwg::Notice,
+    pub aspect_controller: RefCell<AspectController>,
+    pub aspect_player_tx: RefCell<Option<flume::Sender<String>>>,
 }
 
 impl MainWindow {
@@ -135,13 +141,16 @@ impl MainWindow {
 
         self.window.set_visible(!self.start_hidden);
         self.tray.tray_show_hide.set_checked(!self.start_hidden);
-
         let player_channel = self.player.channel.borrow();
         let (player_tx, player_rx) = player_channel
             .as_ref()
             .expect("Cannont obtain communication channel for the Player");
         let player_tx = player_tx.clone();
         let player_rx = player_rx.clone();
+        {
+            *self.aspect_player_tx.borrow_mut() = Some(player_tx.clone());
+            self.aspect_controller.borrow().apply_current(&player_tx);
+        }
 
         let web_channel = self.webview.channel.borrow();
         let (web_tx, web_rx) = web_channel
@@ -242,6 +251,7 @@ impl MainWindow {
         let hide_splash_sender = self.hide_splash_notice.sender();
         let focus_sender = self.focus_notice.sender();
         let autoupdater_setup_mutex = self.autoupdater_setup_file.clone();
+        let aspect_toggle_sender_thread = self.aspect_toggle_notice.sender();
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
                 .recv()
@@ -295,6 +305,9 @@ impl MainWindow {
                     }
                     Some("win-focus") => {
                         focus_sender.notice();
+                    }
+                    Some("borderbreaker-cycle") => {
+                        aspect_toggle_sender_thread.notice();
                     }
                     Some("autoupdater-notif-clicked") => {
                         // We've shown the "Update Available" notification
@@ -421,4 +434,32 @@ impl MainWindow {
         self.tray.tray_show_hide.set_checked(self.window.visible());
         self.transmit_window_visibility_change();
     }
+    fn on_aspect_toggle_notice(&self) {
+        let player_tx_opt = self.aspect_player_tx.borrow().clone();
+        if let Some(player_tx) = player_tx_opt {
+            let mut controller = self.aspect_controller.borrow_mut();
+            controller.cycle();
+            controller.apply_current(&player_tx);
+            let label = format!(
+                "Aspect: {}",
+                controller
+                    .current_mode()
+                    .overlay_label(controller.display_ratio())
+            );
+            drop(controller);
+            self.broadcast_aspect_overlay(&label);
+        }
+    }
+    fn broadcast_aspect_overlay(&self, text: &str) {
+        if let Ok(web_channel) = self.webview.channel.try_borrow() {
+            if let Some((web_tx, _)) = web_channel.as_ref() {
+                let payload = json!({
+                    "__borderbreakerOverlay": text,
+                })
+                .to_string();
+                let _ = web_tx.send(payload);
+            }
+        }
+    }
 }
+

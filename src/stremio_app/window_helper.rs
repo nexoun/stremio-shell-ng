@@ -154,3 +154,13 @@ impl WindowStyle {
         }
     }
 }
+
+pub fn primary_monitor_ratio() -> f32 {
+    let width = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32;
+    let height = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32;
+    if height <= f32::EPSILON {
+        0.0
+    } else {
+        width / height
+    }
+}
