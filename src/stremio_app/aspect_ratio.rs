@@ -25,7 +25,7 @@ static CONFIG_DIR: Lazy<PathBuf> = Lazy::new(|| {
 pub enum AspectMode {
     AutoDetect,
     FillCrop,
-    FitToScreen,
+    Original,
     Ratio16x9,
     Ratio4x3,
     Ratio1x1,
@@ -39,7 +39,7 @@ impl AspectMode {
         match self {
             AspectMode::AutoDetect => "Auto",
             AspectMode::FillCrop => "Fill (Crop)",
-            AspectMode::FitToScreen => "Fit to Screen",
+            AspectMode::Original => "Original",
             AspectMode::Ratio16x9 => "16:9",
             AspectMode::Ratio4x3 => "4:3",
             AspectMode::Ratio1x1 => "1:1",
@@ -81,7 +81,7 @@ impl AspectMode {
                 panscan: 1.0,
                 video_unscaled: Some("no"),
             },
-            AspectMode::FitToScreen => AspectSpec {
+            AspectMode::Original => AspectSpec {
                 aspect_override: None,
                 keep_aspect: true,
                 panscan: 0.0,
@@ -132,7 +132,7 @@ impl AspectController {
         let order = vec![
             AspectMode::AutoDetect,
             AspectMode::FillCrop,
-            AspectMode::FitToScreen,
+            AspectMode::Original,
             AspectMode::Ratio16x9,
             AspectMode::Ratio4x3,
             AspectMode::Ratio1x1,
@@ -266,10 +266,10 @@ mod tests {
         controller.cycle();
         assert_eq!(controller.current_mode(), AspectMode::FillCrop);
         controller.cycle();
-        assert_eq!(controller.current_mode(), AspectMode::FitToScreen);
+        assert_eq!(controller.current_mode(), AspectMode::Original);
         // ensure persisted
         let loaded = AspectController::with_paths(path.clone(), 2.33);
-        assert_eq!(loaded.current_mode(), AspectMode::FitToScreen);
+        assert_eq!(loaded.current_mode(), AspectMode::Original);
         let _ = fs::remove_file(path);
     }
 
