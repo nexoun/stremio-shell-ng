@@ -16,12 +16,14 @@ impl PlayerProprChange {
     fn value_from_format(data: PropertyData, as_json: bool) -> serde_json::Value {
         match data {
             PropertyData::Flag(d) => serde_json::Value::Bool(d),
-            PropertyData::Int64(d) => serde_json::Value::Number(
-                serde_json::Number::from_f64(d as f64).expect("MPV returned invalid number"),
-            ),
-            PropertyData::Double(d) => serde_json::Value::Number(
-                serde_json::Number::from_f64(d).expect("MPV returned invalid number"),
-            ),
+            PropertyData::Int64(d) => match serde_json::Number::from_f64(d as f64) {
+                Some(n) => serde_json::Value::Number(n),
+                None => serde_json::Value::Null,
+            },
+            PropertyData::Double(d) => match serde_json::Number::from_f64(d) {
+                Some(n) => serde_json::Value::Number(n),
+                None => serde_json::Value::Null,
+            },
             PropertyData::OsdStr(s) => serde_json::Value::String(s.to_string()),
             PropertyData::Str(s) => {
                 if as_json {

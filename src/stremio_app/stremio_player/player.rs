@@ -102,8 +102,7 @@ fn create_event_thread(
                     .expect("failed to observer MPV property");
             }
 
-            // -1.0 means to block and wait for an event.
-            let event = match event_context.wait_event(-1.) {
+            let event = match event_context.wait_event(1.) {
                 Some(Ok(event)) => event,
                 Some(Err(error)) => {
                     eprintln!("Event errored: {error:?}");
@@ -134,7 +133,7 @@ fn create_event_thread(
 
             rpc_response_sender
                 .send(RPCResponse::response_message(player_response.to_value()))
-                .expect("failed to send RPCResponse");
+                .ok();
         }
     })
 }
