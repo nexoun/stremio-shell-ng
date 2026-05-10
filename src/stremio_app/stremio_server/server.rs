@@ -8,7 +8,10 @@ use std::{
     os::windows::process::CommandExt,
     path,
     process::{Command, Stdio},
-    sync::{Arc, Mutex, Once},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, Once,
+    },
     thread,
 };
 use winapi::um::{
@@ -71,6 +74,7 @@ pub struct StremioServer {
     parent: nwg::ControlHandle,
     crash_notice: nwg::Notice,
     logs: Arc<Mutex<String>>,
+    running: Arc<AtomicBool>,
 }
 
 impl StremioServer {
@@ -78,9 +82,14 @@ impl StremioServer {
         if self.development {
             return;
         }
+        if self.running.swap(true, Ordering::SeqCst) {
+            eprintln!("StremioServer::start() called while a server is already running; skipping");
+            return;
+        }
         let (tx, rx) = flume::unbounded();
         let logs = self.logs.clone();
         let sender = self.crash_notice.sender();
+        let running = self.running.clone();
 
         ensure_parent_job_object();
 
@@ -205,6 +214,8 @@ impl StremioServer {
                 let mut logs = logs.lock().unwrap();
                 *logs = lines.lock().unwrap().deref().to_string();
             }
+            // Clear before sender.notice() so the next start() can pass the swap guard.
+            running.store(false, Ordering::SeqCst);
             println!("Server terminated.");
             sender.notice();
         });
