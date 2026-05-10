@@ -104,7 +104,7 @@ impl StremioServer {
                     let out_lines = lines.clone();
                     let tx = tx.clone();
                     let out_thread = thread::spawn(move || {
-                        let http_endpoint = String::new();
+                        let mut endpoint_sent = false;
                         loop {
                             let mut buffer = [0; SRV_BUFFER_SIZE];
                             let on = match stdout.read(&mut buffer[..]) {
@@ -120,19 +120,21 @@ impl StremioServer {
                             {
                                 let lines = &mut *out_lines.lock().unwrap();
                                 *lines += string_data.deref();
-                                if http_endpoint.is_empty() {
-                                    if let Some(http_endpoint) = string_data
+                                if !endpoint_sent {
+                                    if let Some(line) = lines
                                         .lines()
                                         .find(|line| line.starts_with("EngineFS server started at"))
                                     {
-                                        let http_endpoint =
-                                            http_endpoint.split_whitespace().last().unwrap();
-                                        println!("HTTP endpoint: {http_endpoint}");
-                                        let endpoint = http_endpoint.to_string();
-                                        tx.send(endpoint.clone()).ok();
+                                        if let Some(endpoint) = line.split_whitespace().last() {
+                                            println!("HTTP endpoint: {endpoint}");
+                                            tx.send(endpoint.to_string()).ok();
+                                            endpoint_sent = true;
+                                        }
                                     }
                                 }
-                                *lines = lines
+                                // Preserve trailing newline so the next chunk can't glue onto an unterminated line.
+                                let had_trailing_newline = lines.ends_with('\n');
+                                let mut trimmed = lines
                                     .lines()
                                     .rev()
                                     .take(SRV_LOG_SIZE)
@@ -141,6 +143,10 @@ impl StremioServer {
                                     .rev()
                                     .collect::<Vec<&str>>()
                                     .join("\n");
+                                if had_trailing_newline {
+                                    trimmed.push('\n');
+                                }
+                                *lines = trimmed;
                             };
                         }
                     });
@@ -164,7 +170,8 @@ impl StremioServer {
                             {
                                 let lines = &mut *err_lines.lock().unwrap();
                                 *lines += string_data.deref();
-                                *lines = lines
+                                let had_trailing_newline = lines.ends_with('\n');
+                                let mut trimmed = lines
                                     .lines()
                                     .rev()
                                     .take(SRV_LOG_SIZE)
@@ -173,6 +180,10 @@ impl StremioServer {
                                     .rev()
                                     .collect::<Vec<&str>>()
                                     .join("\n");
+                                if had_trailing_newline {
+                                    trimmed.push('\n');
+                                }
+                                *lines = trimmed;
                             };
                         }
                     });
