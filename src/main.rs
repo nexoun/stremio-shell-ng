@@ -93,6 +93,17 @@ fn main() {
     }
     // END IPC
 
+    // v4 has a different mutex name; the IPC check above won't catch it.
+    if detect_stremio_on_default_port() {
+        nwg::init().ok();
+        nwg::error_message(
+            "Stremio is already running",
+            "Another Stremio instance (v4) appears to be running on port 11470.\n\
+             Please close it before launching this version.",
+        );
+        exit(1);
+    }
+
     std::env::set_var(
         STREMIO_SERVER_DEV_MODE,
         if opt.development { "true" } else { "false" },
@@ -121,4 +132,23 @@ fn main() {
     })
     .expect("Failed to build UI");
     nwg::dispatch_thread_events();
+}
+
+/// Returns true if a Stremio streaming server is bound on 11470.
+fn detect_stremio_on_default_port() -> bool {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+    match client.get("http://127.0.0.1:11470/settings").send() {
+        Ok(resp) if resp.status().is_success() => match resp.text() {
+            // Both keys present rules out foreign processes (VPN, proxy) on 11470.
+            Ok(body) => body.contains("\"baseUrl\"") && body.contains("\"options\""),
+            Err(_) => false,
+        },
+        _ => false,
+    }
 }
