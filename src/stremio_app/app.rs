@@ -218,7 +218,16 @@ impl MainWindow {
             }
         }); // thread
 
-        if let Ok(mut listener) = PipeServer::bind(socket_path) {
+        // Retry: a stale FIRST_PIPE_INSTANCE handle returns ERROR_ACCESS_DENIED briefly.
+        let listener = (0..5).find_map(|attempt| match PipeServer::bind(socket_path) {
+            Ok(listener) => Some(listener),
+            Err(err) => {
+                eprintln!("PipeServer::bind failed (attempt {}): {err}", attempt + 1);
+                thread::sleep(time::Duration::from_millis(100 * (attempt + 1)));
+                None
+            }
+        });
+        if let Some(mut listener) = listener {
             let focus_sender = self.focus_notice.sender();
             thread::spawn(move || loop {
                 if let Ok(mut stream) = listener.accept() {
@@ -232,6 +241,8 @@ impl MainWindow {
                     }
                 }
             });
+        } else {
+            eprintln!("PipeServer::bind failed after retries; single-instance forwarding disabled");
         }
 
         // Read message from player
