@@ -78,13 +78,14 @@ pub struct StremioServer {
 }
 
 impl StremioServer {
-    pub fn start(&self) {
+    /// Spawn the streaming server; recv on the returned receiver to wait for readiness.
+    pub fn start(&self) -> Option<flume::Receiver<String>> {
         if self.development {
-            return;
+            return None;
         }
         if self.running.swap(true, Ordering::SeqCst) {
             eprintln!("StremioServer::start() called while a server is already running; skipping");
-            return;
+            return None;
         }
         let (tx, rx) = flume::unbounded();
         let logs = self.logs.clone();
@@ -220,8 +221,7 @@ impl StremioServer {
             sender.notice();
         });
 
-        // Wait for the server to start
-        rx.recv().unwrap();
+        Some(rx)
     }
 }
 
@@ -240,7 +240,10 @@ impl PartialUi for StremioServer {
             .parent(data.parent)
             .build(&mut data.crash_notice)
             .ok();
-        data.start();
+        // Block until ready so the WebView isn't attached against an unbound port.
+        if let Some(rx) = data.start() {
+            rx.recv().ok();
+        }
         println!("Stremio server started");
         Ok(())
     }
@@ -257,6 +260,7 @@ impl PartialUi for StremioServer {
                 "Stremio server crash log",
                 self.logs.lock().unwrap().deref(),
             );
+            // Don't block: this runs on the GUI message pump.
             self.start();
         }
     }
