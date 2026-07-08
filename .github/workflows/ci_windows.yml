@@ -83,7 +83,7 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "setup\Stremio.iss"
 
       - name: Upload setup
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: StremioSetup-x64
           path: StremioSetup-v*_x64.exe
