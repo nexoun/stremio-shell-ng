@@ -1,10 +1,7 @@
-name: Build Windows
+name: CI - Windows
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 jobs:
   build:
@@ -14,8 +11,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -23,69 +18,26 @@ jobs:
           toolchain: stable
           target: x86_64-pc-windows-msvc
 
-      - name: Configure MSVC
+      - name: Setup devcmd
         uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
 
-      - name: Install Inno Setup
-        shell: pwsh
-        run: choco install innosetup --yes --no-progress
-
-      - name: Install Inno Setup translations
-        shell: pwsh
-        run: |
-          $languageDir = Join-Path "${env:ProgramFiles(x86)}" "Inno Setup 6\Languages"
-          $languages = @(
-            "Armenian",
-            "BrazilianPortuguese",
-            "Bulgarian",
-            "Catalan",
-            "Corsican",
-            "Czech",
-            "Danish",
-            "Dutch",
-            "Finnish",
-            "French",
-            "German",
-            "Hebrew",
-            "Icelandic",
-            "Italian",
-            "Japanese",
-            "Norwegian",
-            "Polish",
-            "Portuguese",
-            "Russian",
-            "Slovak",
-            "Slovenian",
-            "Spanish",
-            "Turkish",
-            "Ukrainian"
-          )
-
-          foreach ($language in $languages) {
-            $target = Join-Path $languageDir "$language.isl"
-            if (Test-Path -LiteralPath $target) {
-              continue
-            }
-
-            $url = "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/$language.isl"
-            curl.exe --fail --location --silent --show-error --output $target $url
-          }
-
-      - name: Build shell
-        shell: pwsh
+      - name: Build Stremio
         run: cargo build --release --target x86_64-pc-windows-msvc
 
-      - name: Build setup
-        shell: pwsh
+      - name: Prepare build artifacts
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "setup\Stremio.iss"
+          New-Item -ItemType Directory -Force portable | Out-Null
 
-      - name: Upload setup
+          Copy-Item target/x86_64-pc-windows-msvc/release/stremio-shell-ng.exe portable
+          Copy-Item libmpv-2.dll portable
+          Copy-Item server.js portable
+          Copy-Item bin/* portable
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: StremioSetup-x64
-          path: StremioSetup-v*_x64.exe
+          name: stremio-portable-win64
+          path: portable
           if-no-files-found: error
-          retention-days: 3
