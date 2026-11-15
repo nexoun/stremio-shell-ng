@@ -3,17 +3,27 @@ use native_windows_gui as nwg;
 use rand::Rng;
 use serde_json;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
+    collections::VecDeque,
     io::Read,
     os::windows::process::CommandExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{self, Command},
     str,
     sync::{Arc, Mutex},
     thread, time,
 };
 use url::Url;
-use winapi::um::{winbase::CREATE_BREAKAWAY_FROM_JOB, winuser::WS_EX_TOPMOST};
+use winapi::{
+    shared::windef::RECT,
+    um::{
+        winbase::CREATE_BREAKAWAY_FROM_JOB,
+        winuser::{
+            GetWindowLongA, SetWindowPos, GWL_STYLE, SWP_NOACTIVATE, SWP_NOZORDER, WM_DPICHANGED,
+            WS_CAPTION, WS_EX_TOPMOST,
+        },
+    },
+};
 
 use crate::stremio_app::{
     constants::{
@@ -34,6 +44,26 @@ use crate::stremio_app::{
 use super::discord::DiscordRpc;
 use super::stremio_server::{ServerEvent, StremioServer};
 
+const WEBUI_RETRY_DELAYS_SECS: [u64; 2] = [2, 5];
+const WEBUI_READY_TIMEOUT_SECS: u64 = 30;
+const WEBUI_RETRY_READY_TIMEOUT_SECS: u64 = 15;
+const WEBUI_UNREACHABLE: &str = "Stremio couldn't load its interface. \
+    Check your internet connection, VPN or firewall, then click Retry.";
+
+pub enum WebUiEvent {
+    Ready,
+    LoadFailed(String),
+    Timeout(u64),
+    Retry(u64),
+}
+
+type WebUiEvents = Arc<Mutex<VecDeque<WebUiEvent>>>;
+
+fn send_webui_event(events: &WebUiEvents, notice: &nwg::NoticeSender, event: WebUiEvent) {
+    events.lock().unwrap().push_back(event);
+    notice.notice();
+}
+
 pub enum OpenRequest {
     Input(String),
     Ready,
@@ -43,7 +73,7 @@ pub enum OpenRequest {
 #[derive(Default, NwgUi)]
 pub struct MainWindow {
     pub command: String,
-    pub commands_path: Option<String>,
+    pub commands_server: RefCell<Option<PipeServer>>,
     pub webui_url: String,
     pub no_splash: bool,
     pub dev_tools: bool,
@@ -58,6 +88,10 @@ pub struct MainWindow {
     pub saved_window_style: RefCell<WindowStyle>,
     pub open_media_sender: RefCell<Option<flume::Sender<OpenRequest>>>,
     pub local_server_url: Arc<Mutex<Option<String>>>,
+    pub webui_events: WebUiEvents,
+    pub webui_ready: Cell<bool>,
+    pub webui_retries: Cell<usize>,
+    pub webui_generation: Cell<u64>,
     #[nwg_resource]
     pub embed: nwg::EmbedResource,
     #[nwg_resource(source_embed: Some(&data.embed), source_embed_str: Some("MAINICON"))]
@@ -111,6 +145,9 @@ pub struct MainWindow {
     #[nwg_control]
     #[nwg_events(OnNotice: [Self::on_cache_directory_notice])]
     pub cache_directory_notice: nwg::Notice,
+    #[nwg_control]
+    #[nwg_events(OnNotice: [Self::on_webui_notice])]
+    pub webui_notice: nwg::Notice,
 }
 
 impl MainWindow {
@@ -156,6 +193,27 @@ impl MainWindow {
         if let Some(hwnd) = self.window.handle.hwnd() {
             if let Ok(mut saved_style) = self.saved_window_style.try_borrow_mut() {
                 saved_style.set_title_bar_color(hwnd);
+                nwg::bind_raw_event_handler(&self.window.handle, 0x10001, |hwnd, msg, _w, l| {
+                    if msg != WM_DPICHANGED
+                        || unsafe { GetWindowLongA(hwnd, GWL_STYLE) } as u32 & WS_CAPTION == 0
+                    {
+                        return None;
+                    }
+                    let rect = unsafe { &*(l as *const RECT) };
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            std::ptr::null_mut(),
+                            rect.left,
+                            rect.top,
+                            rect.right - rect.left,
+                            rect.bottom - rect.top,
+                            SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                    Some(0)
+                })
+                .ok();
                 if let Some(window_settings) = WindowSettings::load() {
                     saved_style
                         .restore_window_placement(hwnd, window_settings.to_window_placement());
@@ -215,13 +273,6 @@ impl MainWindow {
             }
         });
 
-        // Single application IPC
-        let socket_path = Path::new(
-            self.commands_path
-                .as_ref()
-                .expect("Cannot initialie the single application IPC"),
-        );
-
         let autoupdater_endpoint = self.autoupdater_endpoint.clone();
         let force_update = self.force_update;
         let release_candidate = self.release_candidate;
@@ -271,7 +322,8 @@ impl MainWindow {
             }
         }); // thread
 
-        if let Ok(mut listener) = PipeServer::bind(socket_path) {
+        // Single application IPC
+        if let Some(mut listener) = self.commands_server.borrow_mut().take() {
             let focus_sender = self.focus_notice.sender();
             thread::spawn(move || loop {
                 if let Ok(mut stream) = listener.accept() {
@@ -308,6 +360,8 @@ impl MainWindow {
         let cache_directory_sender = self.cache_directory_notice.sender();
         let local_server_url = self.local_server_url.clone();
         let requested_interface_scale = self.requested_interface_scale.clone();
+        let webui_events = self.webui_events.clone();
+        let webui_sender = self.webui_notice.sender();
 
         thread::spawn(move || loop {
             if let Some(msg) = web_rx
@@ -373,6 +427,7 @@ impl MainWindow {
                     }
                     Some("quit") => quit_sender.notice(),
                     Some("app-ready") => {
+                        send_webui_event(&webui_events, &webui_sender, WebUiEvent::Ready);
                         hide_splash_sender.notice();
                         web_tx_web
                             .send(RPCResponse::visibility_change(true, 1, false))
@@ -382,6 +437,16 @@ impl MainWindow {
                             .expect("Failed to send value to updater channel");
 
                         open_sender_web.send(OpenRequest::Ready).ok();
+                    }
+                    Some("app-load-error") => {
+                        if let Some(arg) = msg.get_params() {
+                            let detail = arg.as_str().unwrap_or_default().to_owned();
+                            send_webui_event(
+                                &webui_events,
+                                &webui_sender,
+                                WebUiEvent::LoadFailed(detail),
+                            );
+                        }
                     }
                     Some("app-error") => {
                         hide_splash_sender.notice();
@@ -532,6 +597,8 @@ impl MainWindow {
         } else {
             self.webui_url.clone()
         };
+        self.webui_ready.set(false);
+        self.webui_retries.set(0);
         if let Err(error) = self.webview.navigate(endpoint) {
             self.splash_screen.hide();
             nwg::modal_error_message(
@@ -539,6 +606,99 @@ impl MainWindow {
                 "Cannot load Stremio Web UI",
                 &error.to_string(),
             );
+        } else {
+            self.start_webui_deadline();
+        }
+    }
+    fn start_webui_deadline(&self) {
+        let generation = self.webui_generation.get() + 1;
+        self.webui_generation.set(generation);
+        let timeout = if self.webui_retries.get() > 0 {
+            WEBUI_RETRY_READY_TIMEOUT_SECS
+        } else {
+            WEBUI_READY_TIMEOUT_SECS
+        };
+        let events = self.webui_events.clone();
+        let sender = self.webui_notice.sender();
+        thread::spawn(move || {
+            thread::sleep(time::Duration::from_secs(timeout));
+            send_webui_event(&events, &sender, WebUiEvent::Timeout(generation));
+        });
+    }
+    fn retry_webui_silently(&self) -> bool {
+        let Some(&delay) = WEBUI_RETRY_DELAYS_SECS.get(self.webui_retries.get()) else {
+            return false;
+        };
+        self.webui_retries.set(self.webui_retries.get() + 1);
+        let generation = self.webui_generation.get() + 1;
+        self.webui_generation.set(generation);
+        let events = self.webui_events.clone();
+        let sender = self.webui_notice.sender();
+        thread::spawn(move || {
+            thread::sleep(time::Duration::from_secs(delay));
+            send_webui_event(&events, &sender, WebUiEvent::Retry(generation));
+        });
+        true
+    }
+    fn retry_webui(&self) {
+        match self.webview.retry() {
+            Ok(()) => self.start_webui_deadline(),
+            Err(error) => self.show_webui_error(&error.to_string()),
+        }
+    }
+    fn show_webui_error(&self, details: &str) {
+        self.splash_screen.hide();
+        self.on_show();
+        let choice = nwg::modal_message(
+            &self.window,
+            &nwg::MessageParams {
+                title: "Stremio",
+                content: details,
+                buttons: nwg::MessageButtons::RetryCancel,
+                icons: nwg::MessageIcons::Error,
+            },
+        );
+        // The web UI can become ready while the dialog is open.
+        if self.webui_ready.get() {
+            return;
+        }
+        if choice == nwg::MessageChoice::Retry {
+            if !self.no_splash {
+                self.splash_screen.show();
+            }
+            self.retry_webui();
+        } else {
+            self.on_exit();
+        }
+    }
+    fn on_webui_notice(&self) {
+        let events: Vec<_> = self.webui_events.lock().unwrap().drain(..).collect();
+        for event in events {
+            let current = self.webui_generation.get();
+            match event {
+                WebUiEvent::Ready => {
+                    self.webui_ready.set(true);
+                    self.webui_retries.set(0);
+                }
+                _ if self.webui_ready.get() => {}
+                WebUiEvent::LoadFailed(detail) => {
+                    eprintln!("Web UI load error: {detail}");
+                    if !self.retry_webui_silently() {
+                        self.show_webui_error(&format!("{WEBUI_UNREACHABLE}\n\n{detail}"));
+                    }
+                }
+                WebUiEvent::Timeout(generation) if generation == current => {
+                    eprintln!("Web UI startup timed out");
+                    if self.webui_retries.get() > 0 || !self.retry_webui_silently() {
+                        self.show_webui_error(WEBUI_UNREACHABLE);
+                    }
+                }
+                WebUiEvent::Retry(generation) if generation == current => {
+                    eprintln!("Retrying the web UI (attempt {})", self.webui_retries.get());
+                    self.retry_webui();
+                }
+                WebUiEvent::Timeout(_) | WebUiEvent::Retry(_) => {}
+            }
         }
     }
     fn on_server_notice(&self) {
